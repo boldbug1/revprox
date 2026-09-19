@@ -1,14 +1,26 @@
 package main
 
 import (
-	"net/http"
 	"io"
 	"log"
+	"net/http"
 )
 
 
 type ReverseProxy struct {
 	targetURL string
+}
+
+var ignoreKeys []string = []string{"Connection","Transfer-Encoding","Upgrade","Proxy-Authorization","Trailer","Te","Proxy-Authenticate","Keep-Alive"}
+var addr string = "http://127.0.0.1:9001"
+var port string = ":3000"
+
+func delKeys(h http.Header) {
+
+	for _,keys := range ignoreKeys {
+		h.Del(keys)
+	}
+
 }
 
 func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter,r *http.Request){
@@ -26,9 +38,14 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter,r *http.Request){
 			outReq.Header.Add(key, value)
 		}
 	}
+
+	delKeys(outReq.Header)
+
+	outReq.ContentLength = r.ContentLength
 	resp, err := http.DefaultTransport.RoundTrip(outReq)
 	if err != nil {
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
+		log.Printf("upstream request failed: %v",err)
 		return
 	}
 	defer resp.Body.Close()
@@ -40,6 +57,8 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter,r *http.Request){
 		}
 	}
 
+	delKeys(w.Header())
+
 	w.WriteHeader(resp.StatusCode)
 
 	io.Copy(w, resp.Body)
@@ -48,10 +67,11 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter,r *http.Request){
 func main() {
 
 	rproxy := ReverseProxy{
-		targetURL:"http://127.0.0.1:9001" ,
+		targetURL: addr,
 	}
 
-	if err:= http.ListenAndServe(":3000",&rproxy);err!=nil{
+	log.Printf("proxy listening on %s, forwarding to %s",port,addr)
+	if err:= http.ListenAndServe(port,&rproxy);err!=nil{
 		log.Fatalf("Proxy failed: %v", err)
 	}
 
