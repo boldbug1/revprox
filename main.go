@@ -11,13 +11,14 @@ import (
 
 type ReverseProxy struct {
 	targetURL *url.URL
+	ignoreKeys []string
 }
 
-var ignoreKeys []string = []string{"Transfer-Encoding", "Upgrade", "Proxy-Authorization", "Trailer", "Te", "Proxy-Authenticate", "Keep-Alive"}
+var defaultIgnoreKeys []string = []string{"Transfer-Encoding", "Upgrade", "Proxy-Authorization", "Trailer", "Te", "Proxy-Authenticate", "Keep-Alive"}
 var addr string = "http://127.0.0.1:9001/"
 var port string = ":3000"
 
-func delKeys(h http.Header) {
+func (p *ReverseProxy) delKeys(h http.Header) {
 	for _, val := range h.Values("Connection") {
 		for _, token := range strings.Split(val, ",") {
 			token = strings.TrimSpace(token)
@@ -26,11 +27,21 @@ func delKeys(h http.Header) {
 			}
 		}
 	}
-	for _, keys := range ignoreKeys {
+	for _, keys := range p.ignoreKeys {
 		h.Del(keys)
 	}
 
 	h.Del("Connection")
+}
+
+func NewReverseProxy(target *url.URL, ignoreKeys []string) *ReverseProxy {
+	if ignoreKeys == nil {
+		ignoreKeys = defaultIgnoreKeys
+	}
+	return &ReverseProxy{
+		targetURL:  target,
+		ignoreKeys: ignoreKeys,
+	}
 }
 
 func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -68,7 +79,7 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		outReq.Header.Set("X-Forwarded-For", existingHost+", "+host)
 	}
 
-	delKeys(outReq.Header)
+	p.delKeys(outReq.Header)
 
 	outReq.ContentLength = r.ContentLength
 	resp, err := http.DefaultTransport.RoundTrip(outReq)
@@ -85,7 +96,7 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	delKeys(w.Header())
+	p.delKeys(w.Header())
 
 	w.WriteHeader(resp.StatusCode)
 
@@ -93,18 +104,15 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-
 	target, err := url.Parse(addr)
 
 	if err != nil {
 		log.Fatalf("Invalid url: %v\n", err)
 	}
-	rproxy := ReverseProxy{
-		targetURL: target,
-	}
+	rproxy := NewReverseProxy(target,nil)
 
 	log.Printf("proxy listening on %s, forwarding to %s", port, addr)
-	if err := http.ListenAndServe(port, &rproxy); err != nil {
+	if err := http.ListenAndServe(port, rproxy); err != nil {
 		log.Fatalf("Proxy failed: %v", err)
 	}
 
