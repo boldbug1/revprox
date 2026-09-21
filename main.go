@@ -6,22 +6,31 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 )
 
 type ReverseProxy struct {
 	targetURL *url.URL
 }
 
-var ignoreKeys []string = []string{"Connection", "Transfer-Encoding", "Upgrade", "Proxy-Authorization", "Trailer", "Te", "Proxy-Authenticate", "Keep-Alive"}
+var ignoreKeys []string = []string{"Transfer-Encoding", "Upgrade", "Proxy-Authorization", "Trailer", "Te", "Proxy-Authenticate", "Keep-Alive"}
 var addr string = "http://127.0.0.1:9001/"
 var port string = ":3000"
 
 func delKeys(h http.Header) {
-
+	for _, val := range h.Values("Connection") {
+		for _, token := range strings.Split(val, ",") {
+			token = strings.TrimSpace(token)
+			if token != "" {
+				h.Del(token)
+			}
+		}
+	}
 	for _, keys := range ignoreKeys {
 		h.Del(keys)
 	}
 
+	h.Del("Connection")
 }
 
 func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
