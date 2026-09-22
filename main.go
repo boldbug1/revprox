@@ -7,11 +7,13 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 type ReverseProxy struct {
 	targetURL *url.URL
 	ignoreKeys []string
+	transport http.RoundTripper
 }
 
 var defaultIgnoreKeys []string = []string{"Transfer-Encoding", "Upgrade", "Proxy-Authorization", "Trailer", "Te", "Proxy-Authenticate", "Keep-Alive"}
@@ -38,9 +40,12 @@ func NewReverseProxy(target *url.URL, ignoreKeys []string) *ReverseProxy {
 	if ignoreKeys == nil {
 		ignoreKeys = defaultIgnoreKeys
 	}
+
+	transport := &http.Transport{ResponseHeaderTimeout: 5 * time.Second}
 	return &ReverseProxy{
 		targetURL:  target,
 		ignoreKeys: ignoreKeys,
+		transport: transport,
 	}
 }
 
@@ -66,9 +71,7 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		http.Error(w, "Failed to create upstream request", http.StatusInternalServerError)
-		log.Printf("Error while extracting host: %v", err)
-		return
+		host= r.RemoteAddr
 	}
 
 	existingHost := r.Header.Get("X-Forwarded-For")
@@ -79,11 +82,23 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		outReq.Header.Set("X-Forwarded-For", existingHost+", "+host)
 	}
 
+	outReq.Header.Set("X-Forwarded-Host", r.Host)
+	proto := "http"
+	if r.TLS != nil {
+		proto = "https"
+	}
+	outReq.Header.Set("X-Forwarded-Proto", proto)
+
 	p.delKeys(outReq.Header)
 
 	outReq.ContentLength = r.ContentLength
-	resp, err := http.DefaultTransport.RoundTrip(outReq)
+	resp, err := p.transport.RoundTrip(outReq)
 	if err != nil {
+		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			http.Error(w, "Gateway Timeout", http.StatusGatewayTimeout)
+			log.Printf("upstream request timed out: %v", err)
+			return
+		}
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		log.Printf("upstream request failed: %v", err)
 		return
