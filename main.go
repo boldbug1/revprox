@@ -1,13 +1,19 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"log"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
+	"io"
 )
 
 type ReverseProxy struct {
@@ -148,7 +154,10 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if err != nil {
-			break // includes io.EOF, the normal "done" case
+			if !errors.Is(err, io.EOF) {
+        		log.Printf("stream copy from upstream failed after partial write: %v", err)
+    		}
+			break 
 		}
 	}
 }
@@ -170,10 +179,21 @@ func main() {
 		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+    defer stop()
+	go func(){
+		log.Printf("proxy listening on %s", port)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err,http.ErrServerClosed) {
+			log.Fatalf("Proxy failed: %v", err)
+		}
+	}();
 
-	log.Printf("proxy listening on %s", port)
-	if err := server.ListenAndServe(); err != nil {
-		log.Fatalf("Proxy failed: %v", err)
+	<-ctx.Done()
+	shutCtx,cancel := context.WithTimeout(context.Background(),10*time.Second)
+	defer cancel()
+	log.Println("Shuting down.....")
+	if err:=server.Shutdown(shutCtx);err!=nil{
+		log.Printf("shutdown error: %v",err)
 	}
 
 }
