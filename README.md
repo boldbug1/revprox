@@ -157,7 +157,6 @@ Observe that:
 1. Events stream immediately every 1 second without buffering delays.
 2. Disconnecting the client (e.g. `Ctrl+C`) immediately propagates cancellation upstream to terminate the backend stream goroutine.
 3. The proxy resets the write deadline via `http.ResponseController`, ensuring long-lived streams are not terminated prematurely by `WriteTimeout`.
-
 ---
 
 ## Configuration
