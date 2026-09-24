@@ -1,24 +1,31 @@
 package main
 
 import (
-	"io"
 	"log"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
 type ReverseProxy struct {
-	targetURL *url.URL
+	targetURL  *url.URL
 	ignoreKeys []string
-	transport http.RoundTripper
+	transport  http.RoundTripper
 }
 
 var defaultIgnoreKeys []string = []string{"Transfer-Encoding", "Upgrade", "Proxy-Authorization", "Trailer", "Te", "Proxy-Authenticate", "Keep-Alive"}
 var addr string = "http://127.0.0.1:9001/api/"
 var port string = ":3000"
+
+var bufferPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 32*1024)
+		return &b
+	},
+}
 
 func (p *ReverseProxy) delKeys(h http.Header) {
 	for _, val := range h.Values("Connection") {
@@ -45,7 +52,7 @@ func NewReverseProxy(target *url.URL, ignoreKeys []string) *ReverseProxy {
 	return &ReverseProxy{
 		targetURL:  target,
 		ignoreKeys: ignoreKeys,
-		transport: transport,
+		transport:  transport,
 	}
 }
 
@@ -66,7 +73,7 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	u.Host = p.targetURL.Host
 	u.Scheme = p.targetURL.Scheme
 	u.Path = singleJoiningSlash(p.targetURL.Path, r.URL.Path)
-	u.RawQuery = r.URL.RawQuery	
+	u.RawQuery = r.URL.RawQuery
 
 	target := u.String()
 
@@ -81,7 +88,7 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		host= r.RemoteAddr
+		host = r.RemoteAddr
 	}
 
 	existingHost := r.Header.Get("X-Forwarded-For")
@@ -116,14 +123,34 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 
 	for key, values := range resp.Header {
-    w.Header()[key] = values
+		w.Header()[key] = values
 	}
 
 	p.delKeys(w.Header())
 
 	w.WriteHeader(resp.StatusCode)
 
-	io.Copy(w, resp.Body)
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
+
+	flusher, _ := w.(http.Flusher)
+	bufPtr := bufferPool.Get().(*[]byte)
+	defer bufferPool.Put(bufPtr)
+	buf := *bufPtr
+	for {
+		n, err := resp.Body.Read(buf)
+		if n > 0 {
+			if _, wErr := w.Write(buf[:n]); wErr != nil {
+				break // Client disconnected
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		if err != nil {
+			break // includes io.EOF, the normal "done" case
+		}
+	}
 }
 
 func main() {
@@ -132,15 +159,15 @@ func main() {
 	if err != nil {
 		log.Fatalf("Invalid url: %v\n", err)
 	}
-	rproxy := NewReverseProxy(target,nil)
+	rproxy := NewReverseProxy(target, nil)
 
 	log.Printf("proxy listening on %s, forwarding to %s", port, addr)
 	server := &http.Server{
 		Addr:              port,
 		Handler:           rproxy,
-		ReadHeaderTimeout: 3 * time.Second, 
-		ReadTimeout:       10 * time.Second, 
-		WriteTimeout:      15 * time.Second, 
+		ReadHeaderTimeout: 3 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
 
